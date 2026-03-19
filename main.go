@@ -56,19 +56,19 @@ func main() {
 		runLogin(args)
 	case "logout":
 		runLogout()
-	case "me":
+	case "me", "whoami":
 		runMe(args)
-	case "list":
+	case "list", "ls":
 		runList(args)
-	case "search":
+	case "search", "find", "grep":
 		runSearch(args)
-	case "get":
+	case "get", "cat":
 		runGet(args)
-	case "create":
+	case "create", "new", "add":
 		runCreate(args)
 	case "update":
 		runUpdate(args)
-	case "delete":
+	case "delete", "rm":
 		runDelete(args)
 	case "tags":
 		runTags(args)
@@ -99,15 +99,15 @@ Usage: docstash <command> [options]
 Commands:
   login                                Sign in via GitHub or Google
   logout                               Remove stored credentials
-  me                                   Show current user
+  me (whoami)                          Show current user
 
-  list [--tag TAG] [--limit N]         List documents
-  search QUERY [--tag TAG] [--limit N] Full-text search
-  get ID                               Get document with full content
+  ls (list) [--tag TAG] [--limit N]    List documents
+  search (find, grep) QUERY [options]  Full-text search
+  cat (get) ID                         Get document with full content
 
-  create --title TITLE [options]       Create document (pipe content via stdin)
+  new (create, add) --title TITLE [options]  Create document (stdin for content)
   update ID [--title T] [--summary S]  Update document (pipe content via stdin)
-  delete ID                            Delete document
+  rm (delete) ID                       Delete document
   edit ID --old TEXT --new TEXT         Find-and-replace edit
 
   tags                                 List all tags with counts
@@ -288,7 +288,21 @@ Examples:
 `,
 }
 
+var commandAliases = map[string]string{
+	"ls":    "list",
+	"cat":   "get",
+	"find":  "search",
+	"grep":  "search",
+	"new":   "create",
+	"add":   "create",
+	"rm":    "delete",
+	"whoami": "me",
+}
+
 func printCommandHelp(cmd string) {
+	if canonical, ok := commandAliases[cmd]; ok {
+		cmd = canonical
+	}
 	if help, ok := commandHelp[cmd]; ok {
 		fmt.Print(help)
 	} else {
