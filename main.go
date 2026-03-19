@@ -977,7 +977,7 @@ func printJSON(v any) {
 }
 
 func docURL(id string) string {
-	return webURL + "/home/" + id
+	return webURL + "/d/" +id
 }
 
 func printDocList(result map[string]any) {
