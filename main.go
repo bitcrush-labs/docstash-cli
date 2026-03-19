@@ -28,6 +28,7 @@ type authConfig struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token,omitempty"`
 	ExpiresAt    string `json:"expires_at"`
+	Source       string `json:"-"` // not persisted, set per-invocation
 }
 
 func main() {
@@ -77,6 +78,10 @@ func main() {
 		runTag(args)
 	case "edit":
 		runEdit(args)
+	case "versions", "history":
+		runVersions(args)
+	case "restore":
+		runRestore(args)
 	case "help", "--help", "-h":
 		if len(args) > 0 {
 			printCommandHelp(args[0])
@@ -114,8 +119,12 @@ Commands:
   tags                                 List all tags with counts
   tag ID tag1,tag2,...                 Set tags on a document
 
+  versions (history) ID                List version history
+  restore ID VERSION                   Restore to a previous version
+
 Global options:
   --api-url URL    API base URL (default: %s, or set DOCSTASH_API_URL)
+  --source NAME    Identify change source (default: cli, or set DOCSTASH_SOURCE)
   --json           Output raw JSON instead of formatted text
 
 Run "docstash <command> --help" for details on a specific command.
@@ -293,17 +302,47 @@ Examples:
   docstash tag 550e8400 research,important,draft
   docstash tag 550e8400 archive
 `,
+
+	"versions": `Usage: docstash versions ID [--limit N] [--json]
+
+List version history for a document. Shows version number, source, and date.
+
+Arguments:
+  ID             Document UUID (required)
+
+Options:
+  --limit N      Max results (default 50, max 100)
+  --json         Output raw JSON
+
+Examples:
+  docstash versions 550e8400-e29b-41d4-a716-446655440000
+  docstash versions 550e8400 --limit 10
+`,
+
+	"restore": `Usage: docstash restore ID VERSION [--json]
+
+Restore a document to a previous version. The current state is saved as a new
+version before restoring.
+
+Arguments:
+  ID             Document UUID (required)
+  VERSION        Version number to restore (required)
+
+Examples:
+  docstash restore 550e8400 3
+`,
 }
 
 var commandAliases = map[string]string{
-	"ls":    "list",
-	"cat":   "get",
-	"find":  "search",
-	"grep":  "search",
-	"new":   "create",
-	"add":   "create",
-	"rm":    "delete",
-	"whoami": "me",
+	"ls":      "list",
+	"cat":     "get",
+	"find":    "search",
+	"grep":    "search",
+	"new":     "create",
+	"add":     "create",
+	"rm":      "delete",
+	"whoami":  "me",
+	"history": "versions",
 }
 
 func printCommandHelp(cmd string) {
@@ -330,7 +369,13 @@ func authPath() string {
 	return filepath.Join(dir, "docstash", "auth.json")
 }
 
-func loadAuth() *authConfig {
+func loadAuthWithSource(args []string) *authConfig {
+	cfg := loadAuthBase()
+	cfg.Source = getSource(args)
+	return cfg
+}
+
+func loadAuthBase() *authConfig {
 	data, err := os.ReadFile(authPath())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Not logged in. Run: docstash login")
@@ -400,6 +445,16 @@ func saveAuth(cfg *authConfig) {
 
 // --- API helpers ---
 
+func getSource(args []string) string {
+	if v := getFlagValue(args, "--source"); v != "" {
+		return v
+	}
+	if v := os.Getenv("DOCSTASH_SOURCE"); v != "" {
+		return v
+	}
+	return "cli"
+}
+
 func getAPIURL(args []string) string {
 	for i, a := range args {
 		if a == "--api-url" && i+1 < len(args) {
@@ -442,6 +497,7 @@ func apiRequest(cfg *authConfig, method, path string, body any) (map[string]any,
 		fatal("Request error: %v", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.AccessToken)
+	req.Header.Set("X-DocStash-Source", cfg.Source)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -629,7 +685,7 @@ func runLogout() {
 // --- Commands ---
 
 func runMe(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	result, status := apiRequest(cfg, "GET", "/api/v1/auth/me", nil)
 	requireOK(result, status)
 
@@ -642,7 +698,7 @@ func runMe(args []string) {
 }
 
 func runList(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	params := url.Values{}
 	if v := getFlagValue(args, "--tag"); v != "" {
 		params.Set("tag", v)
@@ -668,7 +724,7 @@ func runList(args []string) {
 }
 
 func runSearch(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fatal("Usage: docstash search QUERY [--tag TAG] [--limit N]")
 	}
@@ -694,7 +750,7 @@ func runSearch(args []string) {
 }
 
 func runGet(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fatal("Usage: docstash get ID")
 	}
@@ -710,7 +766,7 @@ func runGet(args []string) {
 }
 
 func runCreate(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	title := getFlagValue(args, "--title")
 	if title == "" {
 		fatal("Usage: docstash create --title TITLE [--summary S] [--tags t1,t2] [< content.md]")
@@ -741,7 +797,7 @@ func runCreate(args []string) {
 }
 
 func runUpdate(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fatal("Usage: docstash update ID [--title T] [--summary S] [< content.md]")
 	}
@@ -772,7 +828,7 @@ func runUpdate(args []string) {
 }
 
 func runDelete(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fatal("Usage: docstash delete ID")
 	}
@@ -788,7 +844,7 @@ func runDelete(args []string) {
 }
 
 func runTags(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	result, status := apiRequest(cfg, "GET", "/api/v1/tags", nil)
 	requireOK(result, status)
 
@@ -809,7 +865,7 @@ func runTags(args []string) {
 }
 
 func runTag(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	if len(args) < 2 {
 		fatal("Usage: docstash tag ID tag1,tag2,...")
 	}
@@ -828,7 +884,7 @@ func runTag(args []string) {
 }
 
 func runEdit(args []string) {
-	cfg := loadAuth()
+	cfg := loadAuthWithSource(args)
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		fatal("Usage: docstash edit ID --old TEXT --new TEXT")
 	}
@@ -852,6 +908,64 @@ func runEdit(args []string) {
 		return
 	}
 	fmt.Printf("Edited: %s\n", strVal(result, "title"))
+}
+
+func runVersions(args []string) {
+	cfg := loadAuthWithSource(args)
+	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
+		fatal("Usage: docstash versions ID [--limit N]")
+	}
+	id := args[0]
+	params := url.Values{}
+	if v := getFlagValue(args, "--limit"); v != "" {
+		params.Set("limit", v)
+	}
+	path := "/api/v1/documents/" + id + "/versions"
+	if len(params) > 0 {
+		path += "?" + params.Encode()
+	}
+	result, status := apiRequest(cfg, "GET", path, nil)
+	requireOK(result, status)
+
+	if hasFlag(args, "--json") {
+		printJSON(result)
+		return
+	}
+	versions, _ := result["versions"].([]any)
+	if len(versions) == 0 {
+		fmt.Println("No versions found.")
+		return
+	}
+	for _, v := range versions {
+		ver, _ := v.(map[string]any)
+		vNum, _ := ver["version"].(float64)
+		source := strVal(ver, "source")
+		created := formatTime(strVal(ver, "created_at"))
+		title := strVal(ver, "title")
+		if source == "" {
+			source = "-"
+		}
+		fmt.Printf("  v%-4d  %-12s  %-40s  %s\n", int(vNum), source, title, created)
+	}
+}
+
+func runRestore(args []string) {
+	cfg := loadAuthWithSource(args)
+	if len(args) < 2 {
+		fatal("Usage: docstash restore ID VERSION")
+	}
+	id := args[0]
+	version := args[1]
+
+	result, status := apiRequest(cfg, "POST", "/api/v1/documents/"+id+"/versions/"+version+"/restore", map[string]any{})
+	requireOK(result, status)
+
+	if hasFlag(args, "--json") {
+		printJSON(result)
+		return
+	}
+	restoredVersion, _ := result["restored_version"].(float64)
+	fmt.Printf("Restored to version %d: %s\n", int(restoredVersion), strVal(result, "title"))
 }
 
 // --- Output helpers ---
