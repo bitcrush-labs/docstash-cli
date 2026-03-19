@@ -101,11 +101,11 @@ Commands:
   logout                               Remove stored credentials
   me (whoami)                          Show current user
 
-  ls (list) [--tag TAG] [--limit N]    List documents
+  ls (list) [--path P] [--tag TAG]     List documents
   search (find, grep) QUERY [options]  Full-text search
   cat (get) ID                         Get document with full content
 
-  new (create, add) --title TITLE [options]  Create document (stdin for content)
+  new (create, add) --title T [options] Create document (stdin for content)
   update ID [--title T] [--summary S]  Update document (pipe content via stdin)
   rm (delete) ID                       Delete document
   edit ID --old TEXT --new TEXT         Find-and-replace edit
@@ -157,21 +157,23 @@ Remove stored credentials from ~/.config/docstash/auth.json.
 Show the currently authenticated user (name, email, ID).
 `,
 
-	"list": `Usage: docstash list [--tag TAG] [--limit N] [--json]
+	"list": `Usage: docstash list [--path PATH] [--tag TAG] [--limit N] [--json]
 
 List your documents (without content). Sorted by last updated.
 
 Options:
+  --path PATH    Filter by directory path (e.g. /projects/acme)
   --tag TAG      Filter by tag
   --limit N      Max results (default 20, max 100)
   --json         Output raw JSON
 
 Examples:
   docstash list
+  docstash list --path /projects
   docstash list --tag research --limit 5
 `,
 
-	"search": `Usage: docstash search QUERY [--tag TAG] [--limit N] [--json]
+	"search": `Usage: docstash search QUERY [--path PATH] [--tag TAG] [--limit N] [--json]
 
 Full-text search across document titles, summaries, and content.
 Results are ranked by relevance.
@@ -180,6 +182,7 @@ Arguments:
   QUERY          Search query (required)
 
 Options:
+  --path PATH    Filter by directory path
   --tag TAG      Filter by tag
   --limit N      Max results (default 20, max 100)
   --json         Output raw JSON
@@ -187,6 +190,7 @@ Options:
 Examples:
   docstash search "kubernetes deployment"
   docstash search "API design" --tag architecture
+  docstash search "setup" --path /projects/acme
 `,
 
 	"get": `Usage: docstash get ID [--json]
@@ -201,18 +205,20 @@ Examples:
   docstash get 550e8400-e29b-41d4-a716-446655440000 --json
 `,
 
-	"create": `Usage: docstash create --title TITLE [--summary S] [--tags t1,t2] [--json] [< content.md]
+	"create": `Usage: docstash create --title TITLE [--path P] [--summary S] [--tags t1,t2] [--json] [< content.md]
 
 Create a new document. Content can be piped via stdin.
 
 Options:
   --title TITLE  Document title (required)
+  --path PATH    Directory path (default: /)
   --summary S    Short description
   --tags t1,t2   Comma-separated tags
   --json         Output raw JSON
 
 Examples:
   docstash create --title "Meeting Notes" --tags meetings,2026
+  docstash create --title "Design" --path /projects/acme
   echo "# Design Doc" | docstash create --title "Design" --summary "System design"
   cat notes.md | docstash create --title "Notes" --tags notes
 `,
@@ -603,6 +609,9 @@ func runList(args []string) {
 	if v := getFlagValue(args, "--limit"); v != "" {
 		params.Set("limit", v)
 	}
+	if v := getFlagValue(args, "--path"); v != "" {
+		params.Set("path", v)
+	}
 	path := "/api/v1/documents"
 	if len(params) > 0 {
 		path += "?" + params.Encode()
@@ -629,6 +638,9 @@ func runSearch(args []string) {
 	}
 	if v := getFlagValue(args, "--limit"); v != "" {
 		params.Set("limit", v)
+	}
+	if v := getFlagValue(args, "--path"); v != "" {
+		params.Set("path", v)
 	}
 	result, status := apiRequest(cfg, "GET", "/api/v1/documents/search?"+params.Encode(), nil)
 	requireOK(result, status)
@@ -666,6 +678,9 @@ func runCreate(args []string) {
 	body := map[string]any{"title": title}
 	if v := getFlagValue(args, "--summary"); v != "" {
 		body["summary"] = v
+	}
+	if v := getFlagValue(args, "--path"); v != "" {
+		body["path"] = v
 	}
 	if v := getFlagValue(args, "--tags"); v != "" {
 		body["tags"] = strings.Split(v, ",")
@@ -818,13 +833,17 @@ func printDocList(result map[string]any) {
 			id = id[:8]
 		}
 		title := strVal(doc, "title")
+		docPath := strVal(doc, "path")
 		tags := formatTags(doc)
 		updated := formatTime(strVal(doc, "updated_at"))
-		if tags != "" {
-			fmt.Printf("  %s  %-40s  [%s]  %s\n", id, title, tags, updated)
-		} else {
-			fmt.Printf("  %s  %-40s  %s\n", id, title, updated)
+		extra := ""
+		if docPath != "" && docPath != "/" {
+			extra += "  " + docPath
 		}
+		if tags != "" {
+			extra += "  [" + tags + "]"
+		}
+		fmt.Printf("  %s  %-40s%s  %s\n", id, title, extra, updated)
 	}
 	if cursor, ok := result["next_cursor"].(string); ok && cursor != "" {
 		fmt.Printf("\n  More results available (cursor: %s)\n", cursor)
@@ -834,6 +853,9 @@ func printDocList(result map[string]any) {
 func printDoc(doc map[string]any) {
 	fmt.Printf("# %s\n", strVal(doc, "title"))
 	fmt.Printf("ID: %s", strVal(doc, "id"))
+	if p := strVal(doc, "path"); p != "" && p != "/" {
+		fmt.Printf("  |  Path: %s", p)
+	}
 	if tags := formatTags(doc); tags != "" {
 		fmt.Printf("  |  Tags: %s", tags)
 	}
