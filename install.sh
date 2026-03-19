@@ -2,7 +2,7 @@
 set -e
 
 REPO="bitcrush-labs/docstash-cli"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${HOME}/.local/bin"
 
 # Detect OS
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
@@ -38,14 +38,21 @@ trap 'rm -rf "$TMPDIR"' EXIT
 curl -fsSL "$URL" -o "${TMPDIR}/${FILENAME}"
 tar -xzf "${TMPDIR}/${FILENAME}" -C "$TMPDIR"
 
-if [ -w "$INSTALL_DIR" ]; then
-    mv "${TMPDIR}/docstash" "${INSTALL_DIR}/docstash"
-else
-    echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-    sudo mv "${TMPDIR}/docstash" "${INSTALL_DIR}/docstash"
-fi
+mkdir -p "$INSTALL_DIR"
+mv "${TMPDIR}/docstash" "${INSTALL_DIR}/docstash"
 
 echo "docstash ${VERSION} installed to ${INSTALL_DIR}/docstash"
+
+# Check if INSTALL_DIR is in PATH
+case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*) ;;
+    *)
+        echo ""
+        echo "Add ~/.local/bin to your PATH:"
+        echo "  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc"
+        ;;
+esac
+
 echo ""
 echo "Get started:"
 echo "  docstash login"
