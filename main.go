@@ -38,6 +38,13 @@ func main() {
 	cmd := os.Args[1]
 	args := os.Args[2:]
 
+	// Auto-update check (skip for help/version/login)
+	if cmd != "help" && cmd != "--help" && cmd != "-h" &&
+		cmd != "version" && cmd != "--version" && cmd != "-v" &&
+		cmd != "login" {
+		checkForUpdate()
+	}
+
 	// Per-command help
 	if hasFlag(args, "--help") || hasFlag(args, "-h") {
 		printCommandHelp(cmd)
@@ -849,6 +856,143 @@ func formatTime(s string) string {
 		return s
 	}
 	return t.Local().Format("Jan 02 15:04")
+}
+
+// --- Auto-update ---
+
+const updateCheckInterval = 24 * time.Hour
+const updateRepo = "bitcrush-labs/docstash-cli"
+
+func updateCheckPath() string {
+	dir := os.Getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".config")
+	}
+	return filepath.Join(dir, "docstash", "last_update_check")
+}
+
+func checkForUpdate() {
+	if version == "dev" {
+		return
+	}
+
+	// Check if we've checked recently
+	checkFile := updateCheckPath()
+	if data, err := os.ReadFile(checkFile); err == nil {
+		if t, err := time.Parse(time.RFC3339, string(data)); err == nil {
+			if time.Since(t) < updateCheckInterval {
+				return
+			}
+		}
+	}
+
+	// Record that we checked (even if update fails)
+	os.MkdirAll(filepath.Dir(checkFile), 0700)
+	os.WriteFile(checkFile, []byte(time.Now().Format(time.RFC3339)), 0600)
+
+	// Fetch latest version
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get("https://api.github.com/repos/" + updateRepo + "/releases/latest")
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return
+	}
+
+	var release struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+		return
+	}
+
+	latest := strings.TrimPrefix(release.TagName, "v")
+	current := strings.TrimPrefix(version, "v")
+	if latest == current {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "Updating docstash %s → %s...\n", version, release.TagName)
+
+	// Download and replace
+	goos := runtime.GOOS
+	goarch := runtime.GOARCH
+	filename := fmt.Sprintf("docstash_%s_%s.tar.gz", goos, goarch)
+	downloadURL := fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", updateRepo, release.TagName, filename)
+
+	dlResp, err := client.Get(downloadURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+		return
+	}
+	defer dlResp.Body.Close()
+	if dlResp.StatusCode != 200 {
+		fmt.Fprintf(os.Stderr, "Update failed: HTTP %d\n", dlResp.StatusCode)
+		return
+	}
+
+	tmpDir, err := os.MkdirTemp("", "docstash-update-*")
+	if err != nil {
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	tarPath := filepath.Join(tmpDir, filename)
+	f, err := os.Create(tarPath)
+	if err != nil {
+		return
+	}
+	io.Copy(f, dlResp.Body)
+	f.Close()
+
+	// Extract
+	cmd := exec.Command("tar", "-xzf", tarPath, "-C", tmpDir)
+	if err := cmd.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Update failed: could not extract archive\n")
+		return
+	}
+
+	// Replace current binary
+	execPath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	execPath, err = filepath.EvalSymlinks(execPath)
+	if err != nil {
+		return
+	}
+
+	newBinary := filepath.Join(tmpDir, "docstash")
+	if err := os.Rename(newBinary, execPath); err != nil {
+		// rename might fail across filesystems, try copy
+		src, err := os.ReadFile(newBinary)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+			return
+		}
+		if err := os.WriteFile(execPath, src, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "Update failed: %v\n", err)
+			return
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "Updated to %s\n", release.TagName)
+
+	// Re-exec with the same arguments
+	newCmd := exec.Command(execPath, os.Args[1:]...)
+	newCmd.Stdin = os.Stdin
+	newCmd.Stdout = os.Stdout
+	newCmd.Stderr = os.Stderr
+	if err := newCmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 func openBrowser(url string) {
