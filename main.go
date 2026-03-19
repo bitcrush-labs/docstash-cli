@@ -24,9 +24,10 @@ var version = "dev"
 const defaultAPIURL = "https://api.docstash.dev"
 
 type authConfig struct {
-	APIURL      string `json:"api_url"`
-	AccessToken string `json:"access_token"`
-	ExpiresAt   string `json:"expires_at"`
+	APIURL       string `json:"api_url"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresAt    string `json:"expires_at"`
 }
 
 func main() {
@@ -137,7 +138,7 @@ var commandHelp = map[string]string{
 
 Authenticate with DocStash via GitHub or Google OAuth.
 Opens your browser to sign in. The session token is stored locally at
-~/.config/docstash/auth.json and expires after 1 hour.
+~/.config/docstash/auth.json and auto-refreshes (stays valid for 90 days of inactivity).
 
 Options:
   --api-url URL    API base URL (default: ` + defaultAPIURL + `)
@@ -343,11 +344,49 @@ func loadAuth() *authConfig {
 	if cfg.ExpiresAt != "" {
 		exp, err := time.Parse(time.RFC3339, cfg.ExpiresAt)
 		if err == nil && time.Now().After(exp) {
-			fmt.Fprintln(os.Stderr, "Session expired. Run: docstash login")
-			os.Exit(1)
+			if cfg.RefreshToken == "" {
+				fmt.Fprintln(os.Stderr, "Session expired. Run: docstash login")
+				os.Exit(1)
+			}
+			if err := refreshAuth(&cfg); err != nil {
+				fmt.Fprintf(os.Stderr, "Session expired (refresh failed: %v). Run: docstash login\n", err)
+				os.Exit(1)
+			}
 		}
 	}
 	return &cfg
+}
+
+func refreshAuth(cfg *authConfig) error {
+	body, _ := json.Marshal(map[string]string{
+		"refresh_token": cfg.RefreshToken,
+	})
+	resp, err := http.Post(cfg.APIURL+"/api/v1/auth/refresh", "application/json", strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("connection error: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("server returned %d", resp.StatusCode)
+	}
+
+	var result map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return fmt.Errorf("invalid response: %w", err)
+	}
+
+	newAccess, _ := result["access_token"].(string)
+	newRefresh, _ := result["refresh_token"].(string)
+	if newAccess == "" || newRefresh == "" {
+		return fmt.Errorf("missing tokens in response")
+	}
+
+	cfg.AccessToken = newAccess
+	cfg.RefreshToken = newRefresh
+	cfg.ExpiresAt = time.Now().Add(24 * time.Hour).Format(time.RFC3339)
+	saveAuth(cfg)
+	return nil
 }
 
 func saveAuth(cfg *authConfig) {
@@ -563,16 +602,18 @@ func runLogin(args []string) {
 	if !ok {
 		fatal("Failed to get access token")
 	}
+	refreshToken, _ := tokenResult["refresh_token"].(string)
 	expiresIn, _ := tokenResult["expires_in"].(float64)
 	if expiresIn == 0 {
-		expiresIn = 3600
+		expiresIn = 86400
 	}
 	expiresAt := time.Now().Add(time.Duration(expiresIn) * time.Second)
 
 	saveAuth(&authConfig{
-		APIURL:      apiURL,
-		AccessToken: accessToken,
-		ExpiresAt:   expiresAt.Format(time.RFC3339),
+		APIURL:       apiURL,
+		AccessToken:  accessToken,
+		RefreshToken: refreshToken,
+		ExpiresAt:    expiresAt.Format(time.RFC3339),
 	})
 
 	fmt.Println("Logged in successfully!")
