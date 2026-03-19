@@ -22,6 +22,7 @@ import (
 var version = "dev"
 
 const defaultAPIURL = "https://api.docstash.dev"
+const webURL = "https://docstash.dev"
 
 type authConfig struct {
 	APIURL       string `json:"api_url"`
@@ -793,7 +794,7 @@ func runCreate(args []string) {
 		printJSON(result)
 		return
 	}
-	fmt.Printf("Created: %s (%s)\n", strVal(result, "title"), strVal(result, "id"))
+	fmt.Printf("Created: %s (%s)\n%s\n", strVal(result, "title"), strVal(result, "id"), docURL(strVal(result, "id")))
 }
 
 func runUpdate(args []string) {
@@ -975,6 +976,10 @@ func printJSON(v any) {
 	fmt.Println(string(data))
 }
 
+func docURL(id string) string {
+	return webURL + "/home/" + id
+}
+
 func printDocList(result map[string]any) {
 	docs, _ := result["documents"].([]any)
 	if len(docs) == 0 {
@@ -983,7 +988,8 @@ func printDocList(result map[string]any) {
 	}
 	for _, d := range docs {
 		doc, _ := d.(map[string]any)
-		id := strVal(doc, "id")
+		fullID := strVal(doc, "id")
+		id := fullID
 		if len(id) > 8 {
 			id = id[:8]
 		}
@@ -999,6 +1005,7 @@ func printDocList(result map[string]any) {
 			extra += "  [" + tags + "]"
 		}
 		fmt.Printf("  %s  %-40s%s  %s\n", id, title, extra, updated)
+		fmt.Printf("         %s\n", docURL(fullID))
 	}
 	if cursor, ok := result["next_cursor"].(string); ok && cursor != "" {
 		fmt.Printf("\n  More results available (cursor: %s)\n", cursor)
@@ -1015,6 +1022,7 @@ func printDoc(doc map[string]any) {
 		fmt.Printf("  |  Tags: %s", tags)
 	}
 	fmt.Printf("  |  Updated: %s\n", formatTime(strVal(doc, "updated_at")))
+	fmt.Printf("URL: %s\n", docURL(strVal(doc, "id")))
 	if summary := strVal(doc, "summary"); summary != "" {
 		fmt.Printf("Summary: %s\n", summary)
 	}
